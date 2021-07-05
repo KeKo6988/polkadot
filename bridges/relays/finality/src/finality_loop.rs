@@ -58,6 +58,8 @@ pub struct FinalitySyncParams {
 	pub recent_finality_proofs_limit: usize,
 	/// Timeout before we treat our transactions as lost and restart the whole sync process.
 	pub stall_timeout: Duration,
+	/// If true, only mandatory headers are relayed.
+	pub only_mandatory_headers: bool,
 }
 
 /// Source client used in finality synchronization loop.
@@ -65,7 +67,7 @@ pub struct FinalitySyncParams {
 pub trait SourceClient<P: FinalitySyncPipeline>: RelayClient {
 	/// Stream of new finality proofs. The stream is allowed to miss proofs for some
 	/// headers, even if those headers are mandatory.
-	type FinalityProofsStream: Stream<Item = P::FinalityProof>;
+	type FinalityProofsStream: Stream<Item = P::FinalityProof> + Send;
 
 	/// Get best finalized block number.
 	async fn best_finalized_block_number(&self) -> Result<P::Number, Self::Error>;
@@ -101,7 +103,7 @@ pub async fn run<P: FinalitySyncPipeline>(
 	target_client: impl TargetClient<P>,
 	sync_params: FinalitySyncParams,
 	metrics_params: MetricsParams,
-	exit_signal: impl Future<Output = ()>,
+	exit_signal: impl Future<Output = ()> + 'static + Send,
 ) -> Result<(), String> {
 	let exit_signal = exit_signal.shared();
 	relay_utils::relay_loop(source_client, target_client)
@@ -110,7 +112,7 @@ pub async fn run<P: FinalitySyncPipeline>(
 		.standalone_metric(|registry, prefix| GlobalMetrics::new(registry, prefix))?
 		.expose()
 		.await?
-		.run(|source_client, target_client, metrics| {
+		.run(metrics_prefix::<P>(), move |source_client, target_client, metrics| {
 			run_until_connection_lost(
 				source_client,
 				target_client,
@@ -364,7 +366,7 @@ where
 	}
 }
 
-async fn select_header_to_submit<P, SC, TC>(
+pub(crate) async fn select_header_to_submit<P, SC, TC>(
 	source_client: &SC,
 	target_client: &TC,
 	finality_proofs_stream: &mut RestartableFinalityProofsStream<SC::FinalityProofsStream>,
@@ -397,6 +399,11 @@ where
 	.await?;
 	let (mut unjustified_headers, mut selected_finality_proof) = match selected_finality_proof {
 		SelectedFinalityProof::Mandatory(header, finality_proof) => return Ok(Some((header, finality_proof))),
+		_ if sync_params.only_mandatory_headers => {
+			// we are not reading finality proofs from the stream, so eventually it'll break
+			// but we don't care about transient proofs at all, so it is acceptable
+			return Ok(None);
+		}
 		SelectedFinalityProof::Regular(unjustified_headers, header, finality_proof) => {
 			(unjustified_headers, Some((header, finality_proof)))
 		}

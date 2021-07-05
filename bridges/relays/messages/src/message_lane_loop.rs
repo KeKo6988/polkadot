@@ -31,6 +31,7 @@ use crate::metrics::MessageLaneLoopMetrics;
 
 use async_trait::async_trait;
 use bp_messages::{LaneId, MessageNonce, UnrewardedRelayersState, Weight};
+use bp_runtime::messages::DispatchFeePayment;
 use futures::{channel::mpsc::unbounded, future::FutureExt, stream::StreamExt};
 use relay_utils::{
 	interval,
@@ -58,6 +59,15 @@ pub struct Params {
 	pub delivery_params: MessageDeliveryParams,
 }
 
+/// Relayer operating mode.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RelayerMode {
+	/// The relayer doesn't care about rewards.
+	Altruistic,
+	/// The relayer will deliver all messages and confirmations as long as he's not losing any funds.
+	NoLosses,
+}
+
 /// Message delivery race parameters.
 #[derive(Debug, Clone)]
 pub struct MessageDeliveryParams {
@@ -74,20 +84,26 @@ pub struct MessageDeliveryParams {
 	/// Maximal cumulative dispatch weight of relayed messages in single delivery transaction.
 	pub max_messages_weight_in_single_batch: Weight,
 	/// Maximal cumulative size of relayed messages in single delivery transaction.
-	pub max_messages_size_in_single_batch: usize,
+	pub max_messages_size_in_single_batch: u32,
+	/// Relayer operating mode.
+	pub relayer_mode: RelayerMode,
 }
 
-/// Message weights.
+/// Message details.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct MessageWeights {
+pub struct MessageDetails<SourceChainBalance> {
 	/// Message dispatch weight.
-	pub weight: Weight,
+	pub dispatch_weight: Weight,
 	/// Message size (number of bytes in encoded payload).
-	pub size: usize,
+	pub size: u32,
+	/// The relayer reward paid in the source chain tokens.
+	pub reward: SourceChainBalance,
+	/// Where the fee for dispatching message is paid?
+	pub dispatch_fee_payment: DispatchFeePayment,
 }
 
-/// Messages weights map.
-pub type MessageWeightsMap = BTreeMap<MessageNonce, MessageWeights>;
+/// Messages details map.
+pub type MessageDetailsMap<SourceChainBalance> = BTreeMap<MessageNonce, MessageDetails<SourceChainBalance>>;
 
 /// Message delivery race proof parameters.
 #[derive(Debug, PartialEq)]
@@ -117,13 +133,13 @@ pub trait SourceClient<P: MessageLane>: RelayClient {
 
 	/// Returns mapping of message nonces, generated on this client, to their weights.
 	///
-	/// Some weights may be missing from returned map, if corresponding messages were pruned at
+	/// Some messages may be missing from returned map, if corresponding messages were pruned at
 	/// the source chain.
-	async fn generated_messages_weights(
+	async fn generated_message_details(
 		&self,
 		id: SourceHeaderIdOf<P>,
 		nonces: RangeInclusive<MessageNonce>,
-	) -> Result<MessageWeightsMap, Self::Error>;
+	) -> Result<MessageDetailsMap<P::SourceChainBalance>, Self::Error>;
 
 	/// Prove messages in inclusive range [begin; end].
 	async fn prove_messages(
@@ -142,6 +158,9 @@ pub trait SourceClient<P: MessageLane>: RelayClient {
 
 	/// We need given finalized target header on source to continue synchronization.
 	async fn require_target_header_on_source(&self, id: TargetHeaderIdOf<P>);
+
+	/// Estimate cost of single message confirmation transaction in source chain tokens.
+	async fn estimate_confirmation_transaction(&self) -> P::SourceChainBalance;
 }
 
 /// Target client trait.
@@ -183,6 +202,17 @@ pub trait TargetClient<P: MessageLane>: RelayClient {
 
 	/// We need given finalized source header on target to continue synchronization.
 	async fn require_source_header_on_target(&self, id: SourceHeaderIdOf<P>);
+
+	/// Estimate cost of messages delivery transaction in source chain tokens.
+	///
+	/// Please keep in mind that the returned cost must be converted to the source chain
+	/// tokens, even though the transaction fee will be paid in the target chain tokens.
+	async fn estimate_delivery_transaction_in_source_tokens(
+		&self,
+		nonces: RangeInclusive<MessageNonce>,
+		total_dispatch_weight: Weight,
+		total_size: u32,
+	) -> P::SourceChainBalance;
 }
 
 /// State of the client.
@@ -227,7 +257,7 @@ pub async fn run<P: MessageLane>(
 	source_client: impl SourceClient<P>,
 	target_client: impl TargetClient<P>,
 	metrics_params: MetricsParams,
-	exit_signal: impl Future<Output = ()>,
+	exit_signal: impl Future<Output = ()> + Send + 'static,
 ) -> Result<(), String> {
 	let exit_signal = exit_signal.shared();
 	relay_utils::relay_loop(source_client, target_client)
@@ -237,15 +267,18 @@ pub async fn run<P: MessageLane>(
 		.standalone_metric(|registry, prefix| GlobalMetrics::new(registry, prefix))?
 		.expose()
 		.await?
-		.run(|source_client, target_client, metrics| {
-			run_until_connection_lost(
-				params.clone(),
-				source_client,
-				target_client,
-				metrics,
-				exit_signal.clone(),
-			)
-		})
+		.run(
+			metrics_prefix::<P>(&params.lane),
+			move |source_client, target_client, metrics| {
+				run_until_connection_lost(
+					params.clone(),
+					source_client,
+					target_client,
+					metrics,
+					exit_signal.clone(),
+				)
+			},
+		)
 		.await
 }
 
@@ -423,6 +456,10 @@ pub(crate) mod tests {
 		HeaderId(number, number)
 	}
 
+	pub const CONFIRMATION_TRANSACTION_COST: TestSourceChainBalance = 1;
+	pub const BASE_MESSAGE_DELIVERY_TRANSACTION_COST: TestSourceChainBalance = 1;
+
+	pub type TestSourceChainBalance = u64;
 	pub type TestSourceHeaderId = HeaderId<TestSourceHeaderNumber, TestSourceHeaderHash>;
 	pub type TestTargetHeaderId = HeaderId<TestTargetHeaderNumber, TestTargetHeaderHash>;
 
@@ -454,6 +491,7 @@ pub(crate) mod tests {
 		type MessagesProof = TestMessagesProof;
 		type MessagesReceivingProof = TestMessagesReceivingProof;
 
+		type SourceChainBalance = TestSourceChainBalance;
 		type SourceHeaderNumber = TestSourceHeaderNumber;
 		type SourceHeaderHash = TestSourceHeaderHash;
 
@@ -485,6 +523,15 @@ pub(crate) mod tests {
 	pub struct TestSourceClient {
 		data: Arc<Mutex<TestClientData>>,
 		tick: Arc<dyn Fn(&mut TestClientData) + Send + Sync>,
+	}
+
+	impl Default for TestSourceClient {
+		fn default() -> Self {
+			TestSourceClient {
+				data: Arc::new(Mutex::new(TestClientData::default())),
+				tick: Arc::new(|_| {}),
+			}
+		}
 	}
 
 	#[async_trait]
@@ -533,13 +580,23 @@ pub(crate) mod tests {
 			Ok((id, data.source_latest_confirmed_received_nonce))
 		}
 
-		async fn generated_messages_weights(
+		async fn generated_message_details(
 			&self,
 			_id: SourceHeaderIdOf<TestMessageLane>,
 			nonces: RangeInclusive<MessageNonce>,
-		) -> Result<MessageWeightsMap, TestError> {
+		) -> Result<MessageDetailsMap<TestSourceChainBalance>, TestError> {
 			Ok(nonces
-				.map(|nonce| (nonce, MessageWeights { weight: 1, size: 1 }))
+				.map(|nonce| {
+					(
+						nonce,
+						MessageDetails {
+							dispatch_weight: 1,
+							size: 1,
+							reward: 1,
+							dispatch_fee_payment: DispatchFeePayment::AtSourceChain,
+						},
+					)
+				})
 				.collect())
 		}
 
@@ -579,6 +636,9 @@ pub(crate) mod tests {
 		) -> Result<(), TestError> {
 			let mut data = self.data.lock();
 			(self.tick)(&mut *data);
+			data.source_state.best_self =
+				HeaderId(data.source_state.best_self.0 + 1, data.source_state.best_self.1 + 1);
+			data.source_state.best_finalized_self = data.source_state.best_self;
 			data.submitted_messages_receiving_proofs.push(proof);
 			data.source_latest_confirmed_received_nonce = proof;
 			Ok(())
@@ -590,12 +650,25 @@ pub(crate) mod tests {
 			data.target_to_source_header_requirements.push(id);
 			(self.tick)(&mut *data);
 		}
+
+		async fn estimate_confirmation_transaction(&self) -> TestSourceChainBalance {
+			CONFIRMATION_TRANSACTION_COST
+		}
 	}
 
 	#[derive(Clone)]
 	pub struct TestTargetClient {
 		data: Arc<Mutex<TestClientData>>,
 		tick: Arc<dyn Fn(&mut TestClientData) + Send + Sync>,
+	}
+
+	impl Default for TestTargetClient {
+		fn default() -> Self {
+			TestTargetClient {
+				data: Arc::new(Mutex::new(TestClientData::default())),
+				tick: Arc::new(|_| {}),
+			}
+		}
 	}
 
 	#[async_trait]
@@ -681,6 +754,7 @@ pub(crate) mod tests {
 			}
 			data.target_state.best_self =
 				HeaderId(data.target_state.best_self.0 + 1, data.target_state.best_self.1 + 1);
+			data.target_state.best_finalized_self = data.target_state.best_self;
 			data.target_latest_received_nonce = *proof.0.end();
 			if let Some(target_latest_confirmed_received_nonce) = proof.1 {
 				data.target_latest_confirmed_received_nonce = target_latest_confirmed_received_nonce;
@@ -695,13 +769,24 @@ pub(crate) mod tests {
 			data.source_to_target_header_requirements.push(id);
 			(self.tick)(&mut *data);
 		}
+
+		async fn estimate_delivery_transaction_in_source_tokens(
+			&self,
+			nonces: RangeInclusive<MessageNonce>,
+			total_dispatch_weight: Weight,
+			total_size: u32,
+		) -> TestSourceChainBalance {
+			BASE_MESSAGE_DELIVERY_TRANSACTION_COST * (nonces.end() - nonces.start() + 1)
+				+ total_dispatch_weight
+				+ total_size as TestSourceChainBalance
+		}
 	}
 
 	fn run_loop_test(
 		data: TestClientData,
 		source_tick: Arc<dyn Fn(&mut TestClientData) + Send + Sync>,
 		target_tick: Arc<dyn Fn(&mut TestClientData) + Send + Sync>,
-		exit_signal: impl Future<Output = ()>,
+		exit_signal: impl Future<Output = ()> + 'static + Send,
 	) -> TestClientData {
 		async_std::task::block_on(async {
 			let data = Arc::new(Mutex::new(data));
@@ -727,6 +812,7 @@ pub(crate) mod tests {
 						max_messages_in_single_batch: 4,
 						max_messages_weight_in_single_batch: 4,
 						max_messages_size_in_single_batch: 4,
+						relayer_mode: RelayerMode::Altruistic,
 					},
 				},
 				source_client,
@@ -809,37 +895,37 @@ pub(crate) mod tests {
 				..Default::default()
 			},
 			Arc::new(|data: &mut TestClientData| {
+				// blocks are produced on every tick
+				data.source_state.best_self =
+					HeaderId(data.source_state.best_self.0 + 1, data.source_state.best_self.1 + 1);
+				data.source_state.best_finalized_self = data.source_state.best_self;
 				// headers relay must only be started when we need new target headers at source node
 				if data.target_to_source_header_required.is_some() {
 					assert!(data.source_state.best_finalized_peer_at_best_self.0 < data.target_state.best_self.0);
 					data.target_to_source_header_required = None;
 				}
+				// syncing target headers -> source chain
+				if let Some(last_requirement) = data.target_to_source_header_requirements.last() {
+					if *last_requirement != data.source_state.best_finalized_peer_at_best_self {
+						data.source_state.best_finalized_peer_at_best_self = *last_requirement;
+					}
+				}
 			}),
 			Arc::new(move |data: &mut TestClientData| {
+				// blocks are produced on every tick
+				data.target_state.best_self =
+					HeaderId(data.target_state.best_self.0 + 1, data.target_state.best_self.1 + 1);
+				data.target_state.best_finalized_self = data.target_state.best_self;
 				// headers relay must only be started when we need new source headers at target node
 				if data.source_to_target_header_required.is_some() {
 					assert!(data.target_state.best_finalized_peer_at_best_self.0 < data.source_state.best_self.0);
 					data.source_to_target_header_required = None;
 				}
-				// syncing source headers -> target chain (all at once)
-				if data.target_state.best_finalized_peer_at_best_self.0 < data.source_state.best_finalized_self.0 {
-					data.target_state.best_finalized_peer_at_best_self = data.source_state.best_finalized_self;
-				}
-				// syncing source headers -> target chain (all at once)
-				if data.source_state.best_finalized_peer_at_best_self.0 < data.target_state.best_finalized_self.0 {
-					data.source_state.best_finalized_peer_at_best_self = data.target_state.best_finalized_self;
-				}
-				// if target has received messages batch => increase blocks so that confirmations may be sent
-				if data.target_latest_received_nonce == 4
-					|| data.target_latest_received_nonce == 8
-					|| data.target_latest_received_nonce == 10
-				{
-					data.target_state.best_self =
-						HeaderId(data.target_state.best_self.0 + 1, data.target_state.best_self.0 + 1);
-					data.target_state.best_finalized_self = data.target_state.best_self;
-					data.source_state.best_self =
-						HeaderId(data.source_state.best_self.0 + 1, data.source_state.best_self.0 + 1);
-					data.source_state.best_finalized_self = data.source_state.best_self;
+				// syncing source headers -> target chain
+				if let Some(last_requirement) = data.source_to_target_header_requirements.last() {
+					if *last_requirement != data.target_state.best_finalized_peer_at_best_self {
+						data.target_state.best_finalized_peer_at_best_self = *last_requirement;
+					}
 				}
 				// if source has received all messages receiving confirmations => stop
 				if data.source_latest_confirmed_received_nonce == 10 {

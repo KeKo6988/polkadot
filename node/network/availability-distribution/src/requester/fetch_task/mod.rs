@@ -35,7 +35,7 @@ use polkadot_subsystem::{SubsystemContext, jaeger};
 
 use crate::{
 	error::{Fatal, Result},
-	session_cache::{BadValidators, SessionInfo},
+	requester::session_cache::{BadValidators, SessionInfo},
 	LOG_TARGET,
 	metrics::{Metrics, SUCCEEDED, FAILED},
 };
@@ -176,7 +176,6 @@ impl FetchTask {
 	/// Start fetching a chunk.
 	///
 	/// A task handling the fetching of the configured chunk will be spawned.
-	#[tracing::instrument(level = "trace", skip(config, ctx), fields(subsystem = LOG_TARGET))]
 	pub async fn start<Context>(config: FetchTaskConfig, ctx: &mut Context) -> Result<Self>
 	where
 		Context: SubsystemContext,
@@ -190,7 +189,6 @@ impl FetchTask {
 			let (handle, kill) = oneshot::channel();
 
 			ctx.spawn("chunk-fetcher", running.run(kill).boxed())
-				.await
 				.map_err(|e| Fatal::SpawnTask(e))?;
 
 			Ok(FetchTask {
@@ -221,13 +219,13 @@ impl FetchTask {
 		}
 	}
 
-	/// Whether or not there are still relay parents around with this candidate pending
+	/// Whether there are still relay parents around with this candidate pending
 	/// availability.
 	pub fn is_live(&self) -> bool {
 		!self.live_in.is_empty()
 	}
 
-	/// Whether or not this task can be considered finished.
+	/// Whether this task can be considered finished.
 	///
 	/// That is, it is either canceled, succeeded or failed.
 	pub fn is_finished(&self) -> bool {
@@ -249,7 +247,6 @@ enum TaskError {
 }
 
 impl RunningTask {
-	#[tracing::instrument(level = "trace", skip(self, kill), fields(subsystem = LOG_TARGET))]
 	async fn run(self, kill: oneshot::Receiver<()>) {
 		// Wait for completion/or cancel.
 		let run_it = self.run_inner();

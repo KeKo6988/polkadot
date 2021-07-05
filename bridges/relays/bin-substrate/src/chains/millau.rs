@@ -21,9 +21,9 @@ use crate::cli::{
 	encode_call::{self, Call, CliEncodeCall},
 	encode_message, send_message, CliChain,
 };
+use bp_message_dispatch::{CallOrigin, MessagePayload};
 use codec::Decode;
-use frame_support::weights::{GetDispatchInfo, Weight};
-use pallet_bridge_dispatch::{CallOrigin, MessagePayload};
+use frame_support::weights::{DispatchInfo, GetDispatchInfo, Weight};
 use relay_millau_client::Millau;
 use sp_version::RuntimeVersion;
 
@@ -61,6 +61,10 @@ impl CliEncodeCall for Millau {
 				),
 			},
 		})
+	}
+
+	fn get_dispatch_info(call: &millau_runtime::Call) -> anyhow::Result<DispatchInfo> {
+		Ok(call.get_dispatch_info())
 	}
 }
 

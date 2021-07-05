@@ -24,6 +24,9 @@ pub struct RelayHeaders {
 	/// A bridge instance to relay headers for.
 	#[structopt(possible_values = &RelayHeadersBridge::variants(), case_insensitive = true)]
 	bridge: RelayHeadersBridge,
+	/// If passed, only mandatory headers (headers that are changing the GRANDPA authorities set) are relayed.
+	#[structopt(long)]
+	only_mandatory_headers: bool,
 	#[structopt(flatten)]
 	source: SourceConnectionParams,
 	#[structopt(flatten)]
@@ -42,8 +45,8 @@ arg_enum! {
 		MillauToRialto,
 		RialtoToMillau,
 		WestendToMillau,
-		WestendToRococo,
-		RococoToWestend,
+		RococoToWococo,
+		WococoToRococo,
 	}
 }
 
@@ -71,17 +74,17 @@ macro_rules! select_bridge {
 
 				$generic
 			}
-			RelayHeadersBridge::WestendToRococo => {
-				type Source = relay_westend_client::Westend;
-				type Target = relay_rococo_client::Rococo;
-				type Finality = crate::chains::westend_headers_to_rococo::WestendFinalityToRococo;
+			RelayHeadersBridge::RococoToWococo => {
+				type Source = relay_rococo_client::Rococo;
+				type Target = relay_wococo_client::Wococo;
+				type Finality = crate::chains::rococo_headers_to_wococo::RococoFinalityToWococo;
 
 				$generic
 			}
-			RelayHeadersBridge::RococoToWestend => {
-				type Source = relay_rococo_client::Rococo;
-				type Target = relay_westend_client::Westend;
-				type Finality = crate::chains::rococo_headers_to_westend::RococoFinalityToWestend;
+			RelayHeadersBridge::WococoToRococo => {
+				type Source = relay_wococo_client::Wococo;
+				type Target = relay_rococo_client::Rococo;
+				type Finality = crate::chains::wococo_headers_to_rococo::WococoFinalityToRococo;
 
 				$generic
 			}
@@ -97,11 +100,14 @@ impl RelayHeaders {
 			let target_client = self.target.to_client::<Target>().await?;
 			let target_sign = self.target_sign.to_keypair::<Target>()?;
 			let metrics_params = Finality::customize_metrics(self.prometheus_params.into())?;
+			let finality = Finality::new(target_client.clone(), target_sign);
+			finality.start_relay_guards();
 
 			crate::finality_pipeline::run(
-				Finality::new(target_client.clone(), target_sign),
+				finality,
 				source_client,
 				target_client,
+				self.only_mandatory_headers,
 				metrics_params,
 			)
 			.await
