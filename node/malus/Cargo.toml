@@ -8,9 +8,9 @@ path = "src/variant-a.rs"
 
 [package]
 name = "polkadot-test-malus"
-description = "Misbehaving nodes for local testnets, system and simnet tests."
+description = "Misbehaving nodes for local testnets, system and Simnet tests."
 license = "GPL-3.0-only"
-version = "0.9.8"
+version = "0.9.9"
 authors = ["Parity Technologies <admin@parity.io>"]
 edition = "2018"
 readme = "README.md"

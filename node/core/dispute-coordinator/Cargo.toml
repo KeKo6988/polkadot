@@ -1,6 +1,6 @@
 [package]
 name = "polkadot-node-core-dispute-coordinator"
-version = "0.1.0"
+version = "0.9.9"
 authors = ["Parity Technologies <admin@parity.io>"]
 edition = "2018"
 
@@ -27,3 +27,4 @@ sp-keyring = { git = "https://github.com/paritytech/substrate", branch = "master
 sp-core = { git = "https://github.com/paritytech/substrate", branch = "master" }
 sp-keystore = { git = "https://github.com/paritytech/substrate", branch = "master" }
 assert_matches = "1.4.0"
+polkadot-overseer = { path = "../../overseer" }

@@ -52,7 +52,8 @@ pub(crate) fn impl_overseer_struct(info: &OverseerInfo) -> proc_macro2::TokenStr
 	let message_channel_capacity = info.message_channel_capacity;
 	let signal_channel_capacity = info.signal_channel_capacity;
 
-	let log_target = syn::LitStr::new(overseer_name.to_string().to_lowercase().as_str(), overseer_name.span());
+	let log_target =
+		syn::LitStr::new(overseer_name.to_string().to_lowercase().as_str(), overseer_name.span());
 
 	let ts = quote! {
 		const STOP_DELAY: ::std::time::Duration = ::std::time::Duration::from_secs(1);
@@ -90,7 +91,7 @@ pub(crate) fn impl_overseer_struct(info: &OverseerInfo) -> proc_macro2::TokenStr
 
 			/// Gather running subsystems' outbound streams into one.
 			to_overseer_rx: #support_crate ::stream::Fuse<
-				#support_crate ::metered::UnboundedMeteredReceiver< ToOverseer >
+				#support_crate ::metered::UnboundedMeteredReceiver< #support_crate ::ToOverseer >
 			>,
 
 			/// Events that are sent to the overseer from the outside world.
@@ -98,7 +99,7 @@ pub(crate) fn impl_overseer_struct(info: &OverseerInfo) -> proc_macro2::TokenStr
 		}
 
 		impl #generics #overseer_name #generics #where_clause {
-			/// Send the given signal, a terminatin signal, to all subsystems
+			/// Send the given signal, a termination signal, to all subsystems
 			/// and wait for all subsystems to go down.
 			///
 			/// The definition of a termination signal is up to the user and

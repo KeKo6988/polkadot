@@ -23,8 +23,10 @@ use super::*;
 /// which acts as the gateway to constructing the overseer.
 pub(crate) fn impl_misc(info: &OverseerInfo) -> proc_macro2::TokenStream {
 	let overseer_name = info.overseer_name.clone();
-	let subsystem_sender_name = Ident::new(&(overseer_name.to_string() + "SubsystemSender"), overseer_name.span());
-	let subsystem_ctx_name = Ident::new(&(overseer_name.to_string() + "SubsystemContext"), overseer_name.span());
+	let subsystem_sender_name =
+		Ident::new(&(overseer_name.to_string() + "SubsystemSender"), overseer_name.span());
+	let subsystem_ctx_name =
+		Ident::new(&(overseer_name.to_string() + "SubsystemContext"), overseer_name.span());
 	let consumes = &info.consumes();
 	let signal = &info.extern_signal_ty;
 	let wrapper_message = &info.message_wrapper;
@@ -42,7 +44,7 @@ pub(crate) fn impl_misc(info: &OverseerInfo) -> proc_macro2::TokenStream {
 			signals_received: SignalsReceived,
 		}
 
-		/// impl for wrapping message type...
+		/// implementation for wrapping message type...
 		#[#support_crate ::async_trait]
 		impl SubsystemSender< #wrapper_message > for #subsystem_sender_name {
 			async fn send_message(&mut self, msg: #wrapper_message) {
@@ -118,7 +120,7 @@ pub(crate) fn impl_misc(info: &OverseerInfo) -> proc_macro2::TokenStream {
 				signals: #support_crate ::metered::MeteredReceiver< #signal >,
 				messages: SubsystemIncomingMessages<M>,
 				to_subsystems: ChannelsOut,
-				to_overseer: #support_crate ::metered::UnboundedMeteredSender<ToOverseer>,
+				to_overseer: #support_crate ::metered::UnboundedMeteredSender<#support_crate:: ToOverseer>,
 			) -> Self {
 				let signals_received = SignalsReceived::default();
 				#subsystem_ctx_name {
@@ -136,7 +138,7 @@ pub(crate) fn impl_misc(info: &OverseerInfo) -> proc_macro2::TokenStream {
 		}
 
 		#[#support_crate ::async_trait]
-		impl<M: std::fmt::Debug + Send + 'static> SubsystemContext for #subsystem_ctx_name<M>
+		impl<M: std::fmt::Debug + Send + 'static> #support_crate ::SubsystemContext for #subsystem_ctx_name<M>
 		where
 			#subsystem_sender_name: #support_crate ::SubsystemSender< #wrapper_message >,
 			#wrapper_message: From<M>,

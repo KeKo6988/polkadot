@@ -19,13 +19,17 @@ use std::convert::TryInto;
 use parity_scale_codec::{Decode, Encode};
 
 use sp_application_crypto::AppKey;
-use sp_keystore::{CryptoStore, SyncCryptoStorePtr, Error as KeystoreError};
+use sp_keystore::{CryptoStore, Error as KeystoreError, SyncCryptoStorePtr};
 
-use polkadot_primitives::v1::{CandidateHash, CandidateReceipt, DisputeStatement, InvalidDisputeStatementKind, SessionIndex, ValidDisputeStatementKind, ValidatorId, ValidatorIndex, ValidatorSignature};
+use super::{Statement, UncheckedSignedFullStatement};
+use polkadot_primitives::v1::{
+	CandidateHash, CandidateReceipt, DisputeStatement, InvalidDisputeStatementKind, SessionIndex,
+	SigningContext, ValidDisputeStatementKind, ValidatorId, ValidatorIndex, ValidatorSignature,
+};
 
 /// `DisputeMessage` and related types.
 mod message;
-pub use message::{DisputeMessage, UncheckedDisputeMessage, Error as DisputeMessageCheckError};
+pub use message::{DisputeMessage, Error as DisputeMessageCheckError, UncheckedDisputeMessage};
 
 /// A checked dispute statement from an associated validator.
 #[derive(Debug, Clone)]
@@ -51,9 +55,8 @@ pub struct CandidateVotes {
 impl CandidateVotes {
 	/// Get the set of all validators who have votes in the set, ascending.
 	pub fn voted_indices(&self) -> Vec<ValidatorIndex> {
-		let mut v: Vec<_> = self.valid.iter().map(|x| x.1).chain(
-			self.invalid.iter().map(|x| x.1)
-		).collect();
+		let mut v: Vec<_> =
+			self.valid.iter().map(|x| x.1).chain(self.invalid.iter().map(|x| x.1)).collect();
 
 		v.sort();
 		v.dedup();
@@ -71,18 +74,15 @@ impl SignedDisputeStatement {
 		validator_public: ValidatorId,
 		validator_signature: ValidatorSignature,
 	) -> Result<Self, ()> {
-		dispute_statement.check_signature(
-			&validator_public,
-			candidate_hash,
-			session_index,
-			&validator_signature,
-		).map(|_| SignedDisputeStatement {
-			dispute_statement,
-			candidate_hash,
-			validator_public,
-			validator_signature,
-			session_index,
-		})
+		dispute_statement
+			.check_signature(&validator_public, candidate_hash, session_index, &validator_signature)
+			.map(|_| SignedDisputeStatement {
+				dispute_statement,
+				candidate_hash,
+				validator_public,
+				validator_signature,
+				session_index,
+			})
 	}
 
 	/// Sign this statement with the given keystore and key. Pass `valid = true` to
@@ -106,10 +106,12 @@ impl SignedDisputeStatement {
 			ValidatorId::ID,
 			&validator_public.clone().into(),
 			&data,
-		).await?;
+		)
+		.await?;
 
 		let signature = match signature {
-			Some(sig) => sig.try_into().map_err(|_| KeystoreError::KeyNotSupported(ValidatorId::ID))?,
+			Some(sig) =>
+				sig.try_into().map_err(|_| KeystoreError::KeyNotSupported(ValidatorId::ID))?,
 			None => return Ok(None),
 		};
 
@@ -145,6 +147,39 @@ impl SignedDisputeStatement {
 	/// Access the underlying session index.
 	pub fn session_index(&self) -> SessionIndex {
 		self.session_index
+	}
+
+	/// Convert a [`SignedFullStatement`] to a [`SignedDisputeStatement`]
+	///
+	/// As [`SignedFullStatement`] contains only the validator index and
+	/// not the validator public key, the public key must be passed as well,
+	/// along with the signing context.
+	///
+	/// This does signature checks again with the data provided.
+	pub fn from_backing_statement(
+		backing_statement: &UncheckedSignedFullStatement,
+		signing_context: SigningContext,
+		validator_public: ValidatorId,
+	) -> Result<Self, ()> {
+		let (statement_kind, candidate_hash) = match backing_statement.unchecked_payload() {
+			Statement::Seconded(candidate) => (
+				ValidDisputeStatementKind::BackingSeconded(signing_context.parent_hash),
+				candidate.hash(),
+			),
+			Statement::Valid(candidate_hash) => (
+				ValidDisputeStatementKind::BackingValid(signing_context.parent_hash),
+				*candidate_hash,
+			),
+		};
+
+		let dispute_statement = DisputeStatement::Valid(statement_kind);
+		Self::new_checked(
+			dispute_statement,
+			candidate_hash,
+			signing_context.session_index,
+			validator_public,
+			backing_statement.unchecked_signature().clone(),
+		)
 	}
 }
 

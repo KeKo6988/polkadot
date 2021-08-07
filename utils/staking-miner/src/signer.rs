@@ -32,7 +32,7 @@ pub(crate) struct Signer {
 	pub(crate) account: AccountId,
 	/// The full crypto key-pair.
 	pub(crate) pair: Pair,
-	/// The raw uri read from file.
+	/// The raw URI read from file.
 	pub(crate) uri: String,
 }
 
@@ -51,7 +51,7 @@ pub(crate) async fn get_account_info<T: frame_system::Config>(
 	.await
 }
 
-/// Read the signer account's uri from the given `path`.
+/// Read the signer account's URI from the given `path`.
 pub(crate) async fn read_signer_uri<
 	P: AsRef<Path>,
 	T: frame_system::Config<AccountId = AccountId, Index = Index>,
@@ -66,8 +66,9 @@ pub(crate) async fn read_signer_uri<
 
 	let pair = Pair::from_string(&uri, None)?;
 	let account = T::AccountId::from(pair.public());
-	let _info =
-		get_account_info::<T>(&client, &account, None).await?.ok_or(Error::AccountDoesNotExists)?;
+	let _info = get_account_info::<T>(&client, &account, None)
+		.await?
+		.ok_or(Error::AccountDoesNotExists)?;
 	log::info!(target: LOG_TARGET, "loaded account {:?}, info: {:?}", &account, _info);
 	Ok(Signer { account, pair, uri: uri.to_string() })
 }

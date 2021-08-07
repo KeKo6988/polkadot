@@ -19,11 +19,10 @@
 
 use thiserror::Error;
 
-use polkadot_node_subsystem_util::{Fault, runtime, unwrap_non_fatal};
+use polkadot_node_subsystem_util::{runtime, unwrap_non_fatal, Fault};
 use polkadot_subsystem::SubsystemError;
 
-use crate::LOG_TARGET;
-use crate::sender;
+use crate::{sender, LOG_TARGET};
 
 #[derive(Debug, Error)]
 #[error(transparent)]
@@ -53,7 +52,6 @@ impl From<sender::Error> for Error {
 /// Fatal errors of this subsystem.
 #[derive(Debug, Error)]
 pub enum Fatal {
-
 	/// Receiving subsystem message from overseer failed.
 	#[error("Receiving message from overseer failed")]
 	SubsystemReceive(#[source] SubsystemError),
@@ -62,15 +60,15 @@ pub enum Fatal {
 	#[error("Spawning subsystem task failed")]
 	SpawnTask(#[source] SubsystemError),
 
-	/// DisputeSender mpsc receiver exhausted.
+	/// `DisputeSender` mpsc receiver exhausted.
 	#[error("Erasure chunk requester stream exhausted")]
 	SenderExhausted,
 
-	/// Errors coming from runtime::Runtime.
+	/// Errors coming from `runtime::Runtime`.
 	#[error("Error while accessing runtime information")]
 	Runtime(#[from] runtime::Fatal),
 
-	/// Errors coming from DisputeSender
+	/// Errors coming from `DisputeSender`
 	#[error("Error while accessing runtime information")]
 	Sender(#[from] sender::Fatal),
 }
@@ -78,7 +76,7 @@ pub enum Fatal {
 /// Non-fatal errors of this subsystem.
 #[derive(Debug, Error)]
 pub enum NonFatal {
-	/// Errors coming from DisputeSender
+	/// Errors coming from `DisputeSender`
 	#[error("Error while accessing runtime information")]
 	Sender(#[from] sender::NonFatal),
 }
@@ -91,9 +89,7 @@ pub type FatalResult<T> = std::result::Result<T, Fatal>;
 ///
 /// We basically always want to try and continue on error. This utility function is meant to
 /// consume top-level errors by simply logging them
-pub fn log_error(result: Result<()>, ctx: &'static str)
-	-> std::result::Result<(), Fatal>
-{
+pub fn log_error(result: Result<()>, ctx: &'static str) -> std::result::Result<(), Fatal> {
 	if let Some(error) = unwrap_non_fatal(result.map_err(|e| e.0))? {
 		tracing::warn!(target: LOG_TARGET, error = ?error, ctx);
 	}

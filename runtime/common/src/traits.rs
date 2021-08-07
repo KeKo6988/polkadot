@@ -16,12 +16,12 @@
 
 //! Traits used across pallets for Polkadot.
 
-use sp_std::vec::*;
-use primitives::v1::{HeadData, ValidationCode, Id as ParaId};
 use frame_support::{
 	dispatch::DispatchResult,
 	traits::{Currency, ReservableCurrency},
 };
+use primitives::v1::{HeadData, Id as ParaId, ValidationCode};
+use sp_std::vec::*;
 
 /// Parachain registration API.
 pub trait Registrar {
@@ -31,18 +31,18 @@ pub trait Registrar {
 	/// Report the manager (permissioned owner) of a parachain, if there is one.
 	fn manager_of(id: ParaId) -> Option<Self::AccountId>;
 
-	/// All parachains. Ordered ascending by ParaId. Parathreads are not included.
+	/// All parachains. Ordered ascending by `ParaId`. Parathreads are not included.
 	fn parachains() -> Vec<ParaId>;
 
-	/// Return if a ParaId is a Parachain.
+	/// Return if a `ParaId` is a Parachain.
 	fn is_parachain(id: ParaId) -> bool {
 		Self::parachains().binary_search(&id).is_ok()
 	}
 
-	/// Return if a ParaId is a Parathread.
+	/// Return if a `ParaId` is a Parathread.
 	fn is_parathread(id: ParaId) -> bool;
 
-	/// Return if a ParaId is registered in the system.
+	/// Return if a `ParaId` is registered in the system.
 	fn is_registered(id: ParaId) -> bool {
 		Self::is_parathread(id) || Self::is_parachain(id)
 	}
@@ -109,9 +109,9 @@ pub trait Leaser {
 
 	/// Lease a new parachain slot for `para`.
 	///
-	/// `leaser` shall have a total of `amount` balance reserved by the implementor of this trait.
+	/// `leaser` shall have a total of `amount` balance reserved by the implementer of this trait.
 	///
-	/// Note: The implementor of the trait (the leasing system) is expected to do all reserve/unreserve calls. The
+	/// Note: The implementer of the trait (the leasing system) is expected to do all reserve/unreserve calls. The
 	/// caller of this trait *SHOULD NOT* pre-reserve the deposit (though should ensure that it is reservable).
 	///
 	/// The lease will last from `period_begin` for `period_count` lease periods. It is undefined if the `para`
@@ -128,7 +128,10 @@ pub trait Leaser {
 
 	/// Return the amount of balance currently held in reserve on `leaser`'s account for leasing `para`. This won't
 	/// go down outside of a lease period.
-	fn deposit_held(para: ParaId, leaser: &Self::AccountId) -> <Self::Currency as Currency<Self::AccountId>>::Balance;
+	fn deposit_held(
+		para: ParaId,
+		leaser: &Self::AccountId,
+	) -> <Self::Currency as Currency<Self::AccountId>>::Balance;
 
 	/// The lease period. This is constant, but can't be a `const` due to it being a runtime configurable quantity.
 	fn lease_period() -> Self::LeasePeriod;
@@ -141,7 +144,7 @@ pub trait Leaser {
 	fn already_leased(
 		para_id: ParaId,
 		first_period: Self::LeasePeriod,
-		last_period: Self::LeasePeriod
+		last_period: Self::LeasePeriod,
 	) -> bool;
 }
 
@@ -204,7 +207,10 @@ pub trait Auctioneer {
 	/// This can only happen when there isn't already an auction in progress. Accepts the `duration`
 	/// of this auction and the `lease_period_index` of the initial lease period of the four that
 	/// are to be auctioned.
-	fn new_auction(duration: Self::BlockNumber, lease_period_index: Self::LeasePeriod) -> DispatchResult;
+	fn new_auction(
+		duration: Self::BlockNumber,
+		lease_period_index: Self::LeasePeriod,
+	) -> DispatchResult;
 
 	/// Given the current block number, return the current auction status.
 	fn auction_status(now: Self::BlockNumber) -> AuctionStatus<Self::BlockNumber>;

@@ -17,7 +17,7 @@
 //! # Polkadot Staking Miner.
 //!
 //! Simple bot capable of monitoring a polkadot (and cousins) chain and submitting solutions to the
-//! 'pallet-election-provider-multi-phase'. See `--help` for more details.
+//! `pallet-election-provider-multi-phase`. See `--help` for more details.
 //!
 //! # Implementation Notes:
 //!
@@ -78,7 +78,7 @@ macro_rules! construct_runtime_prelude {
 
 					let crate::signer::Signer { account, pair, .. } = signer;
 
-					let local_call = EPMCall::<Runtime>::submit(raw_solution, witness);
+					let local_call = EPMCall::<Runtime>::submit(Box::new(raw_solution), witness);
 					let call: Call = <EPMCall<Runtime> as std::convert::TryInto<Call>>::try_into(local_call)
 						.expect("election provider pallet must exist in the runtime, thus \
 							inner call can be converted, qed."
@@ -191,7 +191,7 @@ macro_rules! any_runtime {
 #[derive(Debug, thiserror::Error)]
 enum Error {
 	Io(#[from] std::io::Error),
-	Jsonrpsee(#[from] jsonrpsee_ws_client::Error),
+	Jsonrpsee(#[from] jsonrpsee_ws_client::types::Error),
 	Codec(#[from] codec::Error),
 	Crypto(sp_core::crypto::SecretStringError),
 	RemoteExternalities(&'static str),
@@ -239,7 +239,7 @@ enum Command {
 	Monitor(MonitorConfig),
 	/// Just compute a solution now, and don't submit it.
 	DryRun(DryRunConfig),
-	/// Provide a solution that can be submitted to the chian as an emergency response.
+	/// Provide a solution that can be submitted to the chain as an emergency response.
 	EmergencySolution,
 }
 
@@ -269,7 +269,7 @@ struct DryRunConfig {
 
 #[derive(Debug, Clone, StructOpt)]
 struct SharedConfig {
-	/// The ws node to connect to.
+	/// The `ws` node to connect to.
 	#[structopt(long, default_value = DEFAULT_URI)]
 	uri: String,
 
@@ -283,7 +283,7 @@ struct SharedConfig {
 
 #[derive(Debug, Clone, StructOpt)]
 struct Opt {
-	/// The ws node to connect to.
+	/// The `ws` node to connect to.
 	#[structopt(flatten)]
 	shared: SharedConfig,
 
@@ -299,7 +299,7 @@ async fn create_election_ext<T: EPM::Config, B: BlockT>(
 	with_staking: bool,
 ) -> Result<Ext, Error> {
 	use frame_support::{storage::generator::StorageMap, traits::PalletInfo};
-	let system_block_hash_key = <frame_system::BlockHash<T>>::prefix_hash();
+	use sp_core::hashing::twox_128;
 
 	Builder::<B>::new()
 		.mode(Mode::Online(OnlineConfig {
@@ -317,12 +317,12 @@ async fn create_election_ext<T: EPM::Config, B: BlockT>(
 			} else {
 				vec![<T as frame_system::Config>::PalletInfo::name::<EPM::Pallet<T>>()
 					.expect("Pallet always has name; qed.")
-					.to_string()
-				]
+					.to_string()]
 			},
 			..Default::default()
 		}))
-		.inject_hashed_prefix(&system_block_hash_key)
+		.inject_hashed_prefix(&<frame_system::BlockHash<T>>::prefix_hash())
+		.inject_hashed_key(&[twox_128(b"System"), twox_128(b"Number")].concat())
 		.build()
 		.await
 		.map_err(|why| Error::RemoteExternalities(why))
@@ -338,7 +338,10 @@ fn mine_unchecked<T: EPM::Config>(
 	ext.execute_with(|| {
 		let (solution, _) = <EPM::Pallet<T>>::mine_solution(iterations)?;
 		if do_feasibility {
-			let _ = <EPM::Pallet<T>>::feasibility_check(solution.clone(), EPM::ElectionCompute::Signed)?;
+			let _ = <EPM::Pallet<T>>::feasibility_check(
+				solution.clone(),
+				EPM::ElectionCompute::Signed,
+			)?;
 		}
 		let witness = <EPM::SignedSubmissions<T>>::decode_len().unwrap_or_default();
 		Ok((solution, witness as u32))
@@ -356,7 +359,7 @@ fn mine_dpos<T: EPM::Config>(ext: &mut Ext) -> Result<(), Error> {
 		voters.into_iter().for_each(|(who, stake, targets)| {
 			if targets.len() == 0 {
 				println!("target = {:?}", (who, stake, targets));
-				return;
+				return
 			}
 			let share: u128 = (stake as u128) / (targets.len() as u128);
 			for target in targets {
@@ -385,7 +388,10 @@ fn mine_dpos<T: EPM::Config>(ext: &mut Ext) -> Result<(), Error> {
 
 #[tokio::main]
 async fn main() {
-	env_logger::Builder::from_default_env().format_module_path(true).format_level(true).init();
+	env_logger::Builder::from_default_env()
+		.format_module_path(true)
+		.format_level(true)
+		.init();
 	let Opt { shared, command } = Opt::from_args();
 	log::debug!(target: LOG_TARGET, "attempting to connect to {:?}", shared.uri);
 
@@ -404,7 +410,7 @@ async fn main() {
 					why
 				);
 				std::thread::sleep(std::time::Duration::from_millis(2500));
-			}
+			},
 		}
 	};
 
@@ -421,7 +427,7 @@ async fn main() {
 			unsafe {
 				RUNTIME = AnyRuntime::Polkadot;
 			}
-		}
+		},
 		"kusama" | "kusama-dev" => {
 			sp_core::crypto::set_default_ss58_version(
 				sp_core::crypto::Ss58AddressFormat::KusamaAccount,
@@ -431,7 +437,7 @@ async fn main() {
 			unsafe {
 				RUNTIME = AnyRuntime::Kusama;
 			}
-		}
+		},
 		"westend" => {
 			sp_core::crypto::set_default_ss58_version(
 				sp_core::crypto::Ss58AddressFormat::PolkadotAccount,
@@ -441,11 +447,11 @@ async fn main() {
 			unsafe {
 				RUNTIME = AnyRuntime::Westend;
 			}
-		}
+		},
 		_ => {
 			eprintln!("unexpected chain: {:?}", chain);
-			return;
-		}
+			return
+		},
 	}
 	log::info!(target: LOG_TARGET, "connected to chain {:?}", chain);
 
